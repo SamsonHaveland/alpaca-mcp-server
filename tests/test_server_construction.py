@@ -16,6 +16,7 @@ from typing import Any
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
+import pytest
 from fastmcp.client import Client
 
 from alpaca_mcp_server.readme_docs import (
@@ -24,7 +25,13 @@ from alpaca_mcp_server.readme_docs import (
     ReadMeClientFactory,
 )
 from alpaca_mcp_server.security import DATA_KEY, SECURITY_KEY
-from alpaca_mcp_server.server import build_server
+from alpaca_mcp_server.server import (
+    _build_auth_headers,
+    _make_api_client,
+    build_server,
+    get_mcp_user_agent,
+    strip_v_from_version,
+)
 
 DUMMY_ENV = {
     "ALPACA_API_KEY": "test-key",
@@ -272,6 +279,44 @@ async def _call_tool(
         return _parse_tool_result(
             await client.call_tool(tool_name, args, raise_on_error=raise_on_error)
         )
+
+
+async def test_default_user_agent():
+    with patch.dict(os.environ, DUMMY_ENV, clear=True):
+        async with _make_api_client("https://example.com", _build_auth_headers()) as client:
+            request = client.build_request("GET", "/")
+    assert request.headers["User-Agent"] == get_mcp_user_agent()
+
+
+async def test_custom_user_agent():
+    env = {**DUMMY_ENV, "ALPACA_MCP_USER_AGENT": "custom-client/1.0"}
+    with patch.dict(os.environ, env, clear=True):
+        async with _make_api_client("https://example.com", _build_auth_headers()) as client:
+            request = client.build_request("GET", "/")
+    assert request.headers["User-Agent"] == "custom-client/1.0"
+
+
+async def test_empty_user_agent_opts_out():
+    env = {**DUMMY_ENV, "ALPACA_MCP_USER_AGENT": ""}
+    with patch.dict(os.environ, env, clear=True):
+        async with _make_api_client("https://example.com", _build_auth_headers()) as client:
+            request = client.build_request("GET", "/")
+    assert "User-Agent" not in request.headers
+
+
+@pytest.mark.parametrize(
+    ("release_version", "expected"),
+    [
+        ("v1.2.3", "1.2.3"),
+        ("1.2.3", "1.2.3"),
+        ("dev", "dev"),
+        ("pr-42-0f1e2d3", "pr-42-0f1e2d3"),
+        ("v", "v"),
+        ("", ""),
+    ],
+)
+def test_strip_v_from_version(release_version: str, expected: str) -> None:
+    assert strip_v_from_version(release_version) == expected
 
 
 async def test_tool_count():
@@ -581,9 +626,7 @@ async def test_order_tools_have_destructive_hint():
     for t in order_tools:
         annotations = t.annotations
         assert annotations is not None, f"{t.name} missing annotations"
-        assert annotations.destructiveHint is True, (
-            f"{t.name} should have destructiveHint=True"
-        )
+        assert annotations.destructiveHint is True, f"{t.name} should have destructiveHint=True"
 
 
 async def test_toolset_filtering():
